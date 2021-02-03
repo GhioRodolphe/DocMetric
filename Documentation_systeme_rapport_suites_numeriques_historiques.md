@@ -33,6 +33,19 @@ Prometheus supporte quatre types de métriques :
 "Collect()"  collecte les données et retourne un "![MetricSamples](https://metacpan.org/pod/Net::Prometheus::Types#MetricSamples)". 
 Afin de collecter des données il faut que le collecteur soit "créer" ( "Create()" ) et d'être ![enregistrées](https://metacpan.org/pod/Net::Prometheus#register) au sein du **SERVEUR**.
  
+### Packages nécessaire
+* Côté Citybox : 
+    * p5-Net-Prometheus
+        * p5-Struct-Dumb
+        * p5-Ref-Util
+    * p5-OpenBSD-KvmFiles (nécessaire pour le collecteur `kvm_files_collector.pm`)
+    
+* Côté Citynet :
+    * Prometheus
+    * Mustache::Simple
+    * VictoriaMetrics
+    * Rsync
+
 ### Description générale du fonctionnement côté Citybox
 * Les boîtiers sont pourvu d'un **SERVEUR** (/cloudgate/metrics.psgi) qui écoute sur une socket UNIX.
 * Le **SERVEUR** est pourvu de plusieurs collecteurs (les collecteurs se trouvent la: /cloudgate/lib/<nom_du_collecteur>.pm).
