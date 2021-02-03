@@ -12,7 +12,7 @@ Regrouper tous les métriques collectés en une seule interface et la possibilit
 * ![Documentation  VictoriaMetrics](https://victoriametrics.github.io/).
 
 ### Schéma de l'architecture générale
-![Schéma de l'architecture générale](/images/general architecture.png)
+![Schéma de l'architecture générale](images/arch.png)
 
 ### Quelques définitions
  * ![Prometheus](https://prometheus.io/docs/introduction/overview/) : 
@@ -75,3 +75,242 @@ _Une spécification technique est disponible sur ![GitHub](https://github.com/Gr
 ### Description de "Baggage"
 
 Le but de "Baggage" est d'avoir une interface qui centralise l'affichage des données. 
+
+
+## Ajout de collecteur
+
+### Ajout d'un collecteur "classique"
+#### Étapes
+Cette partie décrit les étapes à suivre dans le but de réaliser pour créer un collecteur simple.
+1. Création du collecteur.pm
+    1. Il vous faut créer une première fonction Create() (comme décrit précédemment) 
+Exemple pour un collecteur s'appellant exemple_collector.pm :
+    ```pl
+    sub Create {
+      return bless {}, ' exemple_collector  ';
+    }
+    ```
+    1. Créer une fonction collect() cette fonction doit collecter les donner et les retourner dans un ![MetricSamples](https://metacpan.org/pod/Net::Prometheus::Types#MetricSamples) Voici un exemple :
+    ```pl
+    sub collect {
+       my $class = shift @_;
+      my $time = ceil( Time::HiRes::time() * 1000 );
+      open my $psprog, '-|', '/bin/ps', '-A', '-o', 'pid,pcpu'
+        or  $cloudgate::logger->error('can open ps :', $!);
+      my $total = 0;
+      while (my $line = <$psprog>) {
+        unless ( $line =~ /[\d]+\s+(?<cpu>\d+\.\d+)/ ) {
+          $cloudgate::logger->debug('Ignoring line from ps :', $line);
+          next;
+        }
+        $total += $+{cpu};
+      }
+      close $psprog;
+      my @a = ( Sample( 'cpustats_cpu_usage_percent', [], "$total $time") );
+      my @ret = (
+        MetricSamples( 'Cpu_informations', 'gauge', 'Contains CPU usage in %', \@a )
+      );
+      return @ret;
+    }
+    ```
+1. A présent il vous faut ajouter le collecteur à la liste des collecteurs présent dans /cloudgate/metrics.psgi
+Exemple pour un collecteur s'appellant exemple_collector.pm :
+  ```pl
+  my @collectors = (
+    'ram_collector'
+    ,'cpu_collector'
+    ,'kvm_files_collector'
+    ,'count_devices_on_lan'
+    ,'net_interface_io'
+    ,'exemple_collector' # ici
+  );
+  ```
+#### Vérifications
+* (sur la machine possédant le **SERVEUR**) :
+`curl -m 2 --user-agent 'Prometheus/2.13.1' --unix-socket /var/www/run/metrics.sock http://base/prom/metrics`
+curl -m 2 --user-agent 'Prometheus/2.13.1' --unix-socket /var/www/run/metrics.sock http://base/prom/metrics
+Vous devriez y voir le métrique que vous avez ajouté.
+
+* Curl à Prometheus : 
+`curl -m 2 <adresse_prometheus>/api/v1/label/__name__/values`
+Cette requête retourne le nom de tous les métriques présent sur la base de donnée Prometheus.
+_( N'oubliez d'attendre que Prometheus ai ingérer les métriques après votre ajout récent )_.
+
+* Sur l'interface de Prometheus :
+
+![Schéma de l'architecture générale](images/interface_prometheus.png)
+
+
+
+### Ajout d'un collecteur à fréquence de collecte prédéfinie
+
+Afin de créer un collecteur qui collecte des données à une fréquence différente que celle de Prometheus il vous faut reproduire l'étape 1 présent la partie **Ajout d'un collecteur "classique"**. Une fois que vous avez un *collecteur.pm* suivez les étapes ci-dessous:
+
+#### Étapes
+1. Rendez-vous dans le fichier `/cloudgate/metrics.psgi` 
+1. Ajoutez le nom de votre collecteur dans la liste des collecteurs chronométré de la manière suivante (_pour un collecteur ayant comme intervale 10 minutes et comme nom `example_collector.pm`_):
+```pl
+my %timed_collector;
+# Collect every 5 min = 300 s
+$timed_collector{'300'} = {
+  'collectors'=>['cpu_temperature_collector'],
+  'last_collection'=> $last_get_from_Prometheus
+};
+# Collect every 10 min = 600 s
+$timed_collector{'600'} = { # <= ici l'intervalle de temps entre chaque collecte
+  'collectors'=>['example_collector'], # <= ici le nom du collecteur
+  'last_collection'=> $last_get_from_Prometheus
+};
+```
+Si vous souhaitez ajouter un collecteur dans ayant comme intervalle de collecte ajoutez le dans la liste voir exemple ci-dessous (_pour un collecteur s'appellant `example_collector2.pm`_):
+```pl
+$timed_collector{'600'} = { # <= ici l'intervalle de temps entre chaque collecte
+  'collectors'=>['example_collector','example_collector2'], # <= ici le nom du collecteur
+  'last_collection'=> $last_get_from_Prometheus
+};
+```
+#### Vérifications
+
+* Curl à Prometheus : 
+`curl -m 2 <adresse_prometheus>/api/v1/label/__name__/values`
+Cette requête retourne le nom de tous les métriques présent sur la base de donnée Prometheus.
+_( N'oubliez d'attendre que Prometheus ai ingérer les métriques après votre ajout récent )_.
+
+* Sur l'interface de Prometheus :
+
+![Interface web prometheus](images/interface_prometheus.png)
+
+
+## Ajout de métrique via Baggage
+### Configuration de nouveau métrique simple (sans promQL)
+
+En cas d'ajout de collecteur il est préférable d'ajouter ce métrique dans les fichiers de configuration de Baggage.
+Voici les étapes à suivre :
+1. Dans le fichier JSON suivant `/src/assets/json/metric_name_for_human.json` il y a plusieurs propriété chacune d'entre elles désigne un rôle (Admin, Support, User, ...).
+Ajoutez aux rôles souhaitez ( rôles qui peuvent visualiser les données ) la propriété suivante :
+  ```JSON
+  {
+    "<role>":{
+      "<nom_du_metrique>":{
+        "en":"<traduction anglaise>",
+        "fr":"<traduction française>"
+      }
+    }
+  }
+  ```
+  ```
+  <nom_du_metrique> = Nom du métrique présent dans prometheus.
+  <traduction anglaise> = Nom affiché en version anglaise.
+  <traduction française> = Nom affiché en version française.
+  ```
+  1. Dans le fichier JSON suivant `/src/assets/json/config.metrics.json` ajoutez une propriété correspondant au nom du métrique (nom présent dans prometheus) un exemple est présent dans le fichier.
+  
+#### Exemple de résultat :
+  ![graphique nombre de fichier KVM](/images/exemple_bagage_graph_1.png)
+  
+### Configuration de nouveau métrique (avec promQL simple)
+Attention la démarche à suivre ne fonctionnera que si la requête promQL est de cette forme : `<query>(<metric_name>)`.
+
+Il est recommandé de tester les requêtes ![PromQL](https://prometheus.io/docs/prometheus/latest/querying/basics/) via l'![interface web fournie par Prometheus](https://prometheus.io/docs/prometheus/latest/getting_started/#using-the-expression-browser) avant.
+
+Par exemple : 
+* deriv(output[5min])  ➔   OK
+* sum(output)  ➔   OK
+* sum(Devices_on_lan_gauge{LanId=~"Lan_1| Lan_2| "})  ➔   NOK 
+
+Voici les étapes à suivre :
+1. Reproduire toutes les étapes présent dans la partie précédente (_"Configuration de nouveau métrique simple (sans promQL)"_)
+1. Rendez-vous dans le fichier JSON suivant : `/src/assets/json/config.metrics.json`
+1. Dans la propriété "promql" ajouté la fonction que vous souhaitez appliquer
+1. Dans la propriété "type" précisez quel type de vecteur l'opération à besoin (![range_vectors ou instant_vectors](https://training.robustperception.io/courses/promql/lectures/3156025))
+1. Si vous souhaitez garder le métriques sans la fonction promQL il vous faut ajouter un métrique comme dans la partie au dessus en ajoutant "\_raw" à la fin du nom.
+
+Exemple pour un métrique `input` ayant comme promql `deriv(input)` :
+`/src/assets/json/metric_name_for_human.json` :
+```JSON
+{
+  "input_raw":{
+    "en":"input raw",
+    "fr":"input raw"
+  },
+  "input":{
+    "en":"input",
+    "fr":"input"
+  }
+}
+```
+
+`/src/assets/json/config.metrics.json` :
+```JSON
+"input": {
+    "x": {
+      "unit": {
+        "fr":"o/s",
+        "en":"B/s"
+      }
+    },
+    "y": {
+      "min": 0,
+      "step": ""
+    },
+    "type": "range_vectors",
+    "promql": "deriv",
+    "tension": 0.5
+  },
+"input_raw": {
+    "x": {
+      "unit": {
+        "fr":"o",
+        "en":"B"
+      }
+    },
+    "y": {
+      "min": 0
+    },
+    "type": "",
+    "promql": "",
+    "tension": 0.5
+  },
+```
+#### Exemple de résultat :
+
+![output raw (octet)](/images/exemple_bagage_graph_raw.png)
+
+![output (octet/seconde)](/images/exemple_bagage_graph_deriv.png)
+
+
+### Configuration d'un nouveau métrique (avec promQL complexe)
+
+1. Rendez-vous dans le fichier JSON suivant : `/src/assets/json/config.metrics.json`.
+1. Ajoutez un propriété portant le nom du métrique que vous souhaitez ajouter dans :
+
+```JSON
+"custom_metric":{
+    "instant_vectors":{
+     }
+}
+```
+
+```JSON
+"custom_metric":{
+    "range_vectors":{
+     }
+}
+```
+
+```JSON
+"custom_metric":{
+  "instant_vectors":{
+    "LAN_1_3":{
+      "role": ["Support", "Admin"],
+      "query":"sum(Devices_on_lan_gauge{lan_id=~\"LAN_1|LAN_3\"}<box_filter>)",
+      "description":"Lan1 + Lan3"
+    }
+  }
+}
+```
+
+1. Ensuite reproduisez les étapes présent dans la partie  "_Configuration de nouveau métrique simple (sans promQL)_" en utilisant le nom de la propriété que vous avez utilisé précédement.
+
+#### Exemple de résultat :
+![métrique promql lan 1 + 2](/images/exemple_bagage_graph_promql_sum.png)
